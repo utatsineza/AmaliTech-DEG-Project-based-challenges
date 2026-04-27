@@ -11,11 +11,11 @@ from fastapi.responses import JSONResponse
 
 app = FastAPI(title="Idempotency Gateway", version="1.0.0")
 
-# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------
 # In-memory store: { idempotency_key: { "status": "processing"|"done", "body_hash": str,
 #                                        "response_body": dict, "status_code": int,
 #                                        "created_at": float, "expires_at": float } }
-# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------
 store: dict[str, dict] = {}
 
 # Per-key locks to handle race conditions (bonus story)
