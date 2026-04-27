@@ -1,155 +1,239 @@
-# Idempotency-Gateway (The "Pay-Once" Protocol)
+# Idempotency-gateway
+# Idempotency Gateway — Pay-Once Protocol
 
-This challenge is designed to test your ability to bridge Computer Science fundamentals with Modern Backend Engineering.
-
-## 1. Business Context
-
-> **Client:** _FinSafe Transactions Ltd._ (A fast-growing Payment Processor).
-
-### The Problem
-
-FinSafe's clients (e-commerce shops) occasionally experience network timeouts. When this happens, their servers automatically retry sending payment requests. Recently, this has led to a critical issue: **Double Charging**.
-
-If a customer clicks "Pay," the request is sent, but the network lags. The client retries the request. FinSafe processes _both_ requests, charging the customer twice. This is causing customer churn and regulatory headaches.
-
-### The Solution
-
-FinSafe needs you to build an **Idempotency Layer**. This is a middleware service (or API) that ensures no matter how many times a client sends the same request, the payment is processed **exactly once**.
+A FastAPI service that guarantees payment requests are processed **exactly once**, no matter how many times a client retries. Built for FinSafe Transactions Ltd.
 
 ---
 
-## 2. Technical Objective
+## Architecture Diagram
 
-Build a RESTful API that mimics a payment processing backend. It must check for a unique `Idempotency-Key` in the HTTP headers.
+The following sequence diagram covers all four scenarios handled by the gateway.
 
-- **First Request:** Process the payment and save the response.
-- **Duplicate Request:** Detect the existing key and return the _saved_ response immediately, without processing the payment again.
-
----
-
-## 3. Getting Started
-
-1.  **Fork this Repository:** Do not clone it directly. Create a fork to your own GitHub account.
-2.  **Environment:** You may use **Node.js, Python, Java or Go, etc.**. You may use any database or in-memory store (Redis, SQLite, or a simple native Map/Dictionary variable).
-3.  **Submission:** Your final submission will be a link to your forked repository containing the source code and documentation.
-
----
-
-## 4. The Architecture Diagram
-
-**Task:** Before you write any code, you must design the logic flow.
-**Deliverable:** A **Sequence Diagram** or **Flowchart** included in your README.
-
----
-
-## 5. User Stories & Acceptance Criteria
-
-### User Story 1: The First Transaction (Happy Path)
-
-**As a** client system (e.g., an online store),
-**I want to** send a payment request with a unique ID,
-**So that** my transaction is processed successfully.
-
-**Acceptance Criteria:**
-
-- [ ] The API accepts a `POST` request to endpoint `/process-payment`.
-- [ ] The request header must contain `Idempotency-Key: <some-unique-string>`.
-- [ ] The request body accepts a JSON object (e.g., `{"amount": 100, "currency": "GHS"}`).
-- [ ] The server simulates processing (e.g., a 2-second delay) and returns a `200 OK` or `201 Created` response.
-- [ ] The response body should include a status message: `"Charged 100 GHS"`.
-
-### User Story 2: The Duplicate Attempt (Idempotency Logic)
-
-**As a** client system,
-**I want to** safely retry a request if I don't hear back,
-**So that** I don't accidentally double-charge the user.
-
-**Acceptance Criteria:**
-
-- [ ] If the client sends a second `POST` request with the **same** `Idempotency-Key` and payload:
-  - [ ] The server must **NOT** run the processing logic again (no 2-second delay).
-  - [ ] The server must return the **exact same** response body and status code as the first successful request.
-  - [ ] The server returns a header `X-Cache-Hit: true` to indicate this was a replayed response.
-
-### User Story 3: Different Request, Same Key (Fraud/Error Check)
-
-**As a** security officer,
-**I want to** reject requests that reuse keys for different payments,
-**So that** we maintain data integrity.
-
-**Acceptance Criteria:**
-
-- [ ] If a request arrives with an existing `Idempotency-Key` but a **different** request body (e.g., changing amount from 100 to 500):
-  - [ ] The server must return a `422 Unprocessable Entity` or `409 Conflict` error.
-  - [ ] The error message should state: `"Idempotency key already used for a different request body."`
+```
+  Client              Gateway (FastAPI)            Store + AI
+    │                       │                          │
+    │  ① First request      │                          │
+    │──POST /process-payment─▶                          │
+    │   Idempotency-Key: K  │──── key exists? ─────────▶
+    │                       │◀─── 404 not found ───────│
+    │                       │  set status="processing" │
+    │                       │──── AI fraud score ──────▶
+    │                       │◀─── score: 0.08, safe ───│
+    │                       │  [~2s processing delay]  │
+    │                       │──── save result ─────────▶
+    │◀── 201 Created ───────│                          │
+    │    "Charged 100 GHS"  │                          │
+    │                       │                          │
+    │  ② Duplicate request  │                          │
+    │──POST /process-payment─▶                          │
+    │   same key + body     │──── key exists? ─────────▶
+    │                       │◀─── 200 done, hash match ─│
+    │◀── 201 + X-Cache-Hit──│                          │
+    │    (no processing)    │                          │
+    │                       │                          │
+    │  ③ Conflict           │                          │
+    │──POST /process-payment─▶                          │
+    │   same key, amount=500│──── key exists? ─────────▶
+    │                       │◀─── 200 done, hash mismatch│
+    │◀── 422 Unprocessable ─│                          │
+    │                       │                          │
+    │  ④ Race condition     │                          │
+    │  Request A ──────────▶ acquires asyncio.Lock     │
+    │  Request B ──────────▶ blocks on Lock            │
+    │                       │  A processes + saves      │
+    │                       │  A releases Lock          │
+    │                       │  B wakes, finds A's result│
+    │◀── B returns A's resp ─│  X-Cache-Hit: true       │
+```
 
 ---
 
-## 6. Bonus User Story (The "In-Flight" Check)
+## Setup Instructions
 
-**As a** system architect,
-**I want to** handle cases where two identical requests arrive at the exact same time,
-**So that** we don't succumb to race conditions.
+### Prerequisites
 
-**Scenario:** Request A arrives. While Request A is still "processing" (during the 2-second delay), Request B (same key) arrives.
+- Python 3.11+
+- An Anthropic API key (optional — the AI fraud check degrades gracefully without it)
 
-**Acceptance Criteria:**
+### 1. Clone and install
 
-- [ ] Request B should not start a new process.
-- [ ] Request B should not return `409 Conflict`.
-- [ ] Request B should wait (block) until Request A finishes, and then return the result of Request A.
+```bash
+git clone https://github.com/<your-username>/idempotency-gateway.git
+cd idempotency-gateway
+mkdir app
 
----
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
-## 7. The "Developer's Choice" Challenge
+pip install -r requirements.txt
+```
 
-We believe great engineers are also product thinkers.
+### 2. Configure environment
 
-**Task:** Identify **one** additional feature or safety mechanism that would make this system better for a real-world Fintech company.
+```bash
+cp .env.example .env
+# Edit .env and add your ANTHROPIC_API_KEY
+```
 
-1.  **Implement it.**
-2.  **Document it:** Explain _why_ you added it in your README.
+### 3. Run
 
----
+```bash
+uvicorn app.main:app --reload
+```
 
-## 8. Documentation Requirements
-
-Your final `README.md` must replace these instructions. It must cover:
-
-1.  **Architecture Diagram**
-2.  **Setup Instructions**
-3.  **API Documentation**
-4.  **Design Decisions**
-5.  **The Developer's Choice:** Description of the extra feature you added.
+Server starts at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
 
 ---
 
-Submit your repo link via the [online](https://forms.cloud.microsoft/e/bLyGT3byxx) form.
+## API Documentation
+
+### POST `/process-payment`
+
+Process a payment. Idempotent — identical requests with the same key return the cached response without re-processing.
+
+**Headers**
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `Idempotency-Key` | ✅ | A unique string per payment attempt (UUID recommended) |
+| `Content-Type` | ✅ | `application/json` |
+
+**Request body**
+
+```json
+{
+  "amount": 100,
+  "currency": "GHS"
+}
+```
+
+**Responses**
+
+| Scenario | Status | Body |
+|----------|--------|------|
+| First request (success) | `201 Created` | `{"status":"success","message":"Charged 100 GHS","fraud_check":{...}}` |
+| Duplicate request | `201 Created` + `X-Cache-Hit: true` | Same body as first response |
+| Same key, different body | `422 Unprocessable Entity` | `{"detail":"Idempotency key already used for a different request body."}` |
+| High-risk transaction | `402 Payment Required` | `{"error":"...","fraud_score":0.91,"flags":["unusually large amount"]}` |
+| Missing/invalid amount | `400 Bad Request` | `{"detail":"amount must be a positive number"}` |
+
+**Example — first request**
+
+```bash
+curl -X POST http://localhost:8000/process-payment \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: a1b2c3d4-e5f6-7890-abcd-ef1234567890" \
+  -d '{"amount": 100, "currency": "GHS"}'
+```
+
+```json
+{
+  "status": "success",
+  "message": "Charged 100 GHS",
+  "idempotency_key": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "fraud_check": {
+    "score": 0.05,
+    "flags": [],
+    "safe": true
+  }
+}
+```
+
+**Example — duplicate request (same key)**
+
+```bash
+curl -X POST http://localhost:8000/process-payment \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: a1b2c3d4-e5f6-7890-abcd-ef1234567890" \
+  -d '{"amount": 100, "currency": "GHS"}'
+```
+
+Returns the same `201` body instantly, with `X-Cache-Hit: true` in response headers.
+
+**Example — conflict**
+
+```bash
+curl -X POST http://localhost:8000/process-payment \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: a1b2c3d4-e5f6-7890-abcd-ef1234567890" \
+  -d '{"amount": 500, "currency": "GHS"}'
+```
+
+```json
+{"detail": "Idempotency key already used for a different request body."}
+```
 
 ---
 
-## 🛑 Pre-Submission Checklist
+### GET `/health`
 
-**WARNING:** Before you submit your solution, you **MUST** pass every item on this list.
-If you miss any of these critical steps, your submission will be **automatically rejected** and you will **NOT** be invited to an interview.
+Returns server status and number of active idempotency keys currently in memory.
 
-### 1. 📂 Repository & Code
+```bash
+curl http://localhost:8000/health
+```
 
-- [ ] **Public Access:** Is your GitHub repository set to **Public**? (We cannot review private repos).
-- [ ] **Clean Code:** Did you remove unnecessary files (like `node_modules`, `.env` with real keys, or `.DS_Store`)?
-- [ ] **Run Check:** if we clone your repo and run `npm start` (or equivalent), does the server start immediately without crashing?
-
-### 2. 📄 Documentation (Crucial)
-
-- [ ] **Architecture Diagram:** Did you include a visual Diagram (Flowchart or Sequence Diagram) in the README?
-- [ ] **README Swap:** Did you **DELETE** the original instructions (the problem brief) from this file and replace it with your own documentation?
-- [ ] **API Docs:** Is there a clear list of Endpoints and Example Requests in the README?
-
-### 3. 🧹 Git Hygiene
-
-- [ ] **Commit History:** Does your repo have multiple commits with meaningful messages? (A single "Initial Commit" is a red flag).
+```json
+{"status": "ok", "active_keys": 3}
+```
 
 ---
 
-**Ready?**
-If you checked all the boxes above, submit your repository link in the application form. Good luck! 🚀
+## Design Decisions
+
+### Why `asyncio.Lock` per key?
+
+The bonus story requires that two simultaneous identical requests do not double-process. A global lock would serialize all requests. A per-key lock means only requests sharing the same `Idempotency-Key` block on each other — all other keys proceed in parallel. This gives correct isolation at zero throughput cost for unrelated payments.
+
+### Why in-memory dict?
+
+The spec explicitly lists a native dictionary as an acceptable store. It requires zero infrastructure, lets reviewers `git clone` → `pip install` → `uvicorn` with no external services. For production you would swap `store` for a Redis hash with atomic `SET NX PX` operations, preserving the same API contract.
+
+### Why SHA-256 for body comparison?
+
+Storing the full JSON body for every key wastes memory and makes comparison O(n). A SHA-256 hash is 64 bytes, O(1) to compare, and collision probability is negligible for payment payloads. `json.dumps(sort_keys=True)` ensures `{"amount":100,"currency":"GHS"}` and `{"currency":"GHS","amount":100}` hash identically.
+
+### Why TTL on keys?
+
+Without expiry, the in-memory store grows forever. A configurable `IDEMPOTENCY_TTL` (default 24 hours) matches Stripe's own idempotency key policy and prevents memory leaks in long-running deployments.
+
+---
+
+## Developer's Choice Feature: AI-Powered Fraud Detection
+
+**What it does:** Before processing any new payment, the gateway calls Claude (via the Anthropic API) to score the transaction for anomalies. The model considers the amount, currency, and the structure of the idempotency key to produce:
+
+- `score` — a float from 0.0 (safe) to 1.0 (very suspicious)
+- `flags` — a list of human-readable anomaly descriptions
+- `safe` — a boolean; `false` triggers a `402` rejection before any charge occurs
+
+**Why this matters for a Fintech company:**
+
+Rule-based fraud systems (block amounts > X, flag currencies Y and Z) are static and easy to circumvent. An LLM-based check can reason about combinations of signals that no hard-coded rule would catch, and it can explain its reasoning in the `flags` field — something auditors and compliance teams can actually read.
+
+**Graceful degradation:** If the Anthropic API key is absent or the call times out, the fraud check returns `safe: true` and the payment proceeds normally. The AI layer is advisory, never a single point of failure.
+
+**How to test it:** Set your `ANTHROPIC_API_KEY` in `.env` and send a suspiciously large amount:
+
+```bash
+curl -X POST http://localhost:8000/process-payment \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: test-fraud-$(date +%s)" \
+  -d '{"amount": 999999, "currency": "XYZ"}'
+```
+
+You may receive a `402` with flags like `["unusually large amount", "unrecognised currency code"]`.
+
+---
+
+## Project Structure
+
+```
+idempotency-gateway/
+├── app/
+│   └── main.py          # FastAPI application (all logic)
+├── requirements.txt
+├── .env.example
+├── .gitignore
+└── README.md
+```
